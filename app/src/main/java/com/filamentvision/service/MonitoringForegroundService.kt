@@ -11,6 +11,9 @@ import com.filamentvision.FilamentVisionApplication
 import com.filamentvision.MainActivity
 import com.filamentvision.R
 import com.filamentvision.model.MonitoringState
+import com.filamentvision.domain.error.ErrorCategory
+import com.filamentvision.domain.error.ErrorSeverity
+import com.filamentvision.domain.error.NewErrorRecord
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,7 +61,17 @@ class MonitoringForegroundService : LifecycleService() {
                 startForeground(NOTIFICATION_ID, buildNotification(null))
                 val target = intent.getDoubleExtra(EXTRA_TARGET_DIAMETER, DEFAULT_TARGET_DIAMETER)
                 serviceScope.launch {
-                    runtime.startMonitoring(target)
+                    try {
+                        runtime.startMonitoring(target)
+                    } catch (failure: Throwable) {
+                        (application as FilamentVisionApplication).errorRecorder.record(
+                            NewErrorRecord(
+                                ErrorSeverity.ERROR, ErrorCategory.SERVICE, "SERVICE_START_FAILED",
+                                "Monitoring service failed to start", failure.message ?: "Foreground monitoring startup failed.",
+                                "MonitoringForegroundService",
+                            ),
+                        )
+                    }
                     if (runtime.state.value.monitoringState != MonitoringState.MONITORING) finishForegroundWork()
                 }
             }

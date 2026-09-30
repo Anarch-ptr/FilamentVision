@@ -3,9 +3,12 @@ package com.filamentvision.data.settings
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.filamentvision.model.BluetoothConnectionConfig
-import com.filamentvision.model.ConnectionType
-import com.filamentvision.model.WifiConnectionConfig
+import com.filamentvision.model.CalibrationProfile
+import com.filamentvision.model.CameraProfile
+import com.filamentvision.model.ConnectionProfile
+import com.filamentvision.model.ImageFormatProfile
+import com.filamentvision.model.TransportProtocol
+import com.filamentvision.model.WifiEndpointProfile
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -23,23 +26,34 @@ class SharedPreferencesConnectionSettingsRepositoryTest {
     }
 
     @Test
-    fun wifiAndBluetoothProfilesSurviveRepositoryRecreation() {
+    fun completeConnectionProfileSurvivesRepositoryRecreation() {
         val repository = SharedPreferencesConnectionSettingsRepository(context)
-        val wifi = WifiConnectionConfig("wifi-device", "10.0.0.8", 5105)
-        val bluetooth = BluetoothConnectionConfig(
-            deviceUid = "ble-device",
-            deviceAddress = "AA:BB:CC:DD:EE:FF",
-            serviceUuid = "0000181a-0000-1000-8000-00805f9b34fb",
-            measurementCharacteristicUuid = "00002a6e-0000-1000-8000-00805f9b34fb",
-            commandCharacteristicUuid = "00002a58-0000-1000-8000-00805f9b34fb",
+        val endpoint = WifiEndpointProfile(
+            endpointId = "wifi-camera",
+            protocol = TransportProtocol.WIFI_TCP,
+            host = "10.0.0.8",
+            port = 5105,
         )
-        repository.save(wifi)
-        repository.save(bluetooth)
+        val image = ImageFormatProfile(width = 640, height = 480)
+        val calibration = CalibrationProfile(
+            roiRight = 640,
+            roiBottom = 480,
+            minimumPixelWidth = 1,
+            maximumPixelWidth = 200,
+            mmPerPixel = 0.01,
+        )
+        val profile = ConnectionProfile(
+            endpoints = listOf(endpoint),
+            cameras = listOf(
+                CameraProfile("A", endpoint.endpointId, imageFormat = image, calibration = calibration),
+                CameraProfile("B", endpoint.endpointId, imageFormat = image, calibration = calibration),
+            ),
+            preferredEndpointId = endpoint.endpointId,
+        )
+        repository.save(profile)
 
-        val restored = SharedPreferencesConnectionSettingsRepository(context).settings.value
+        val restored = SharedPreferencesConnectionSettingsRepository(context).profile.value
 
-        assertEquals(ConnectionType.BLUETOOTH, restored.selectedType)
-        assertEquals(wifi, restored.wifi)
-        assertEquals(bluetooth, restored.bluetooth)
+        assertEquals(profile, restored)
     }
 }

@@ -29,4 +29,5 @@ data class MeasurementEntity(
     val cameraBConfidence: Double,
     val confidence: Double,
     val measurementStatus: String,
+    val sourceType: String = "REAL",
 )

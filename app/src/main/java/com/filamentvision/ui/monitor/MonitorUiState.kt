@@ -4,36 +4,39 @@ import com.filamentvision.model.CalibrationStatus
 import com.filamentvision.model.CameraStatus
 import com.filamentvision.model.VisionMeasurement
 import com.filamentvision.model.ConnectionState
-import com.filamentvision.model.ConnectionType
-import com.filamentvision.model.ConnectionSettings
+import com.filamentvision.model.ConnectionProfile
 import com.filamentvision.model.MonitoringConfiguration
 import com.filamentvision.model.MonitoringState
-import com.filamentvision.model.SimulationScenario
+import com.filamentvision.input.InputState
 
 data class MonitorUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    val inputState: InputState = InputState.Unconfigured,
     val monitoringState: MonitoringState = MonitoringState.IDLE,
     val deviceName: String = "Filament Vision Sensor",
-    val connectionType: ConnectionType = ConnectionType.WIFI,
-    val connectionSettings: ConnectionSettings = ConnectionSettings(),
+    val connectionProfile: ConnectionProfile = ConnectionProfile(),
     val cameraAStatus: CameraStatus = CameraStatus.OFFLINE,
     val cameraBStatus: CameraStatus = CameraStatus.OFFLINE,
     val calibrationStatus: CalibrationStatus = CalibrationStatus.CALIBRATED,
     val configuration: MonitoringConfiguration = MonitoringConfiguration(),
-    val selectedScenario: SimulationScenario = SimulationScenario.NORMAL,
-    val activeFakeProducerCount: Int = 0,
+    val activeProducerCount: Int = 0,
+    val activeSystemErrorId: Long? = null,
+    val activeSystemErrorTitle: String? = null,
 ) {
     val isConnected: Boolean get() = connectionState == ConnectionState.CONNECTED
     val isMonitoring: Boolean get() = monitoringState == MonitoringState.MONITORING
-    val hasLivePreview: Boolean get() = isConnected && activeFakeProducerCount == 1
+    val hasLivePreview: Boolean get() = inputState is InputState.Streaming && activeProducerCount == 1
     val canStartMonitoring: Boolean
-        get() = isConnected && monitoringState == MonitoringState.READY &&
+        get() = isConnected && inputState.canStartMonitoring && monitoringState == MonitoringState.READY &&
             cameraAStatus != CameraStatus.ERROR && cameraBStatus != CameraStatus.ERROR
     val canDisconnect: Boolean get() = connectionState != ConnectionState.DISCONNECTED
     val canReconnect: Boolean
         get() = connectionState == ConnectionState.DISCONNECTED ||
             connectionState == ConnectionState.ERROR
 }
+
+private val InputState.canStartMonitoring: Boolean
+    get() = this is InputState.WaitingForFrame || this is InputState.Streaming
 
 data class LiveMeasurementUiState(
     val latestMeasurement: VisionMeasurement? = null,

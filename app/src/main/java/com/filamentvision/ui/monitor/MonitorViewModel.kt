@@ -5,20 +5,20 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.filamentvision.FilamentVisionApplication
 import com.filamentvision.model.CalibrationStatus
-import com.filamentvision.model.ConnectionType
-import com.filamentvision.model.ConnectionConfig
-import com.filamentvision.model.MonitoringSession
+import com.filamentvision.model.ConnectionProfile
 import com.filamentvision.model.MonitoringState
-import com.filamentvision.model.SimulationScenario
+import com.filamentvision.model.MonitoringSession
 import com.filamentvision.model.VisionMeasurement
+import com.filamentvision.domain.error.ErrorState
+import com.filamentvision.domain.error.ErrorCategory
+import com.filamentvision.domain.connection.ConnectionProfileValidator
+import com.filamentvision.domain.connection.ProfileValidation
 import com.filamentvision.service.MonitoringServiceController
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -31,45 +31,38 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val mutableLiveMeasurementUiState = MutableStateFlow(LiveMeasurementUiState())
     private val mutableSessionClockUiState = MutableStateFlow(SessionClockUiState())
     private val mutableDiagnosticsUiState = MutableStateFlow(DiagnosticsUiState())
-    private var connectionSettings = app.connectionSettingsRepository.settings.value
-    private var calibrationStatus = CalibrationStatus.CALIBRATED
+    private var connectionProfile = app.connectionSettingsRepository.profile.value
+    private var calibrationStatus = calibrationStatusFor(connectionProfile)
     private var sessionTimerJob: Job? = null
-    private var cachedSessions: List<MonitoringSession> = emptyList()
+    private var activeSystemErrorId: Long? = null
+    private var activeSystemErrorTitle: String? = null
 
     val monitorUiState: StateFlow<MonitorUiState> = mutableMonitorUiState.asStateFlow()
     val liveMeasurementUiState: StateFlow<LiveMeasurementUiState> = mutableLiveMeasurementUiState.asStateFlow()
     val sessionClockUiState: StateFlow<SessionClockUiState> = mutableSessionClockUiState.asStateFlow()
     val diagnosticsUiState: StateFlow<DiagnosticsUiState> = mutableDiagnosticsUiState.asStateFlow()
-    val historySessions: StateFlow<List<MonitoringSession>> = app.sessionRepository.sessions.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000L),
-        initialValue = emptyList(),
-    )
     val sessionFinalized = runtime.sessionFinalized
+    val latestCameraFrameCache get() = app.latestCameraFrameCache
+    val errorRecorder get() = app.errorRecorder
+    val visionPipelineRuntime get() = app.visionPipelineRuntime
+    val connectionSettingsRepository get() = app.connectionSettingsRepository
+    val monitoringRuntime get() = app.monitoringRuntime
 
     init {
         observeRuntime()
         observeConnectionSettings()
-        observeHistoryCache()
-        connect()
+        observeSystemErrors()
     }
 
     fun connect() = launchCommand { runtime.connect() }
     fun reconnect() = launchCommand { runtime.reconnect() }
     fun disconnect() = launchCommand { runtime.disconnect() }
 
-    fun changeConnection(type: ConnectionType) {
-        saveConnectionConfig(
-            when (type) {
-                ConnectionType.WIFI -> connectionSettings.wifi
-                ConnectionType.BLUETOOTH -> connectionSettings.bluetooth
-            },
-        )
-    }
-
-    fun saveConnectionConfig(config: ConnectionConfig) {
-        app.connectionSettingsRepository.save(config)
-        launchCommand { runtime.reconnect() }
+    fun saveConnectionProfile(profile: ConnectionProfile) {
+        val result = app.connectionSettingsRepository.save(profile)
+        if (result is com.filamentvision.domain.connection.ProfileValidation.Valid) {
+            launchCommand { runtime.reconnect() }
+        }
     }
 
     fun startMonitoring() {
@@ -85,22 +78,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
 
     fun acknowledgeSessionSummary() = runtime.acknowledgeFinalizedSession()
 
-    fun runFakeCalibration() {
-        viewModelScope.launch {
-            calibrationStatus = CalibrationStatus.CALIBRATING
-            mutableMonitorUiState.update { it.copy(calibrationStatus = calibrationStatus) }
-            delay(900L)
-            calibrationStatus = CalibrationStatus.CALIBRATED
-            mutableMonitorUiState.update { it.copy(calibrationStatus = calibrationStatus) }
-        }
-    }
-
-    fun selectSimulationScenario(scenario: SimulationScenario) = launchCommand {
-        runtime.selectSimulationScenario(scenario)
-    }
-
-    fun sessionById(id: String): MonitoringSession? =
-        runtime.state.value.activeSession?.takeIf { it.id == id } ?: cachedSessions.firstOrNull { it.id == id }
+    fun sessionById(id: String) = runtime.state.value.activeSession?.takeIf { it.id == id }
 
     fun recentMeasurementsSnapshot(): List<VisionMeasurement> = runtime.realtimeMeasurementsSnapshot()
 
@@ -109,14 +87,15 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             runtime.state.collect { state ->
                 mutableMonitorUiState.value = MonitorUiState(
                     connectionState = state.connectionState,
+                    inputState = state.inputState,
                     monitoringState = state.monitoringState,
-                    connectionType = connectionSettings.selectedType,
-                    connectionSettings = connectionSettings,
+                    connectionProfile = connectionProfile,
                     cameraAStatus = state.cameraAStatus,
                     cameraBStatus = state.cameraBStatus,
                     calibrationStatus = calibrationStatus,
-                    selectedScenario = state.selectedScenario,
-                    activeFakeProducerCount = state.activeProducerCount,
+                    activeProducerCount = state.activeProducerCount,
+                    activeSystemErrorId = activeSystemErrorId,
+                    activeSystemErrorTitle = activeSystemErrorTitle,
                 )
                 mutableLiveMeasurementUiState.value = LiveMeasurementUiState(
                     latestMeasurement = state.latestMeasurement,
@@ -133,16 +112,36 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun observeHistoryCache() {
-        viewModelScope.launch { historySessions.collect { cachedSessions = it } }
+    private fun observeSystemErrors() {
+        viewModelScope.launch {
+            app.errorRepository.errors.collect { errors ->
+                val currentSessionId = runtime.state.value.activeSession?.id
+                val active = errors.firstOrNull {
+                    it.state == ErrorState.ACTIVE &&
+                        it.category in OPERATIONAL_ERROR_CATEGORIES &&
+                        (it.sessionId == null || it.sessionId == currentSessionId)
+                }
+                activeSystemErrorId = active?.id
+                activeSystemErrorTitle = active?.title
+                mutableMonitorUiState.update { it.copy(activeSystemErrorId = active?.id, activeSystemErrorTitle = active?.title) }
+            }
+        }
+    }
+
+    private companion object {
+        val OPERATIONAL_ERROR_CATEGORIES = setOf(
+            ErrorCategory.CONNECTION, ErrorCategory.CAMERA, ErrorCategory.MONITORING,
+            ErrorCategory.SERVICE, ErrorCategory.VISUAL_PROCESSING,
+        )
     }
 
     private fun observeConnectionSettings() {
         viewModelScope.launch {
-            app.connectionSettingsRepository.settings.collect { settings ->
-                connectionSettings = settings
+            app.connectionSettingsRepository.profile.collect { profile ->
+                connectionProfile = profile
+                calibrationStatus = calibrationStatusFor(profile)
                 mutableMonitorUiState.update {
-                    it.copy(connectionType = settings.selectedType, connectionSettings = settings)
+                    it.copy(connectionProfile = profile, calibrationStatus = calibrationStatus)
                 }
             }
         }
@@ -169,4 +168,9 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private fun launchCommand(block: suspend () -> Unit) {
         viewModelScope.launch { block() }
     }
+
+    private fun calibrationStatusFor(profile: ConnectionProfile): CalibrationStatus =
+        if (ConnectionProfileValidator.validate(profile) == ProfileValidation.Valid &&
+            profile.cameras.all { it.calibration.mmPerPixel > 0.0 }
+        ) CalibrationStatus.CALIBRATED else CalibrationStatus.NOT_CALIBRATED
 }

@@ -2,7 +2,6 @@ package com.filamentvision.ui.device
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -20,13 +19,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.filamentvision.model.BluetoothConnectionConfig
-import com.filamentvision.model.ConnectionConfig
+import com.filamentvision.input.InputState
+import com.filamentvision.model.BluetoothEndpointProfile
+import com.filamentvision.model.ConnectionProfile
 import com.filamentvision.model.ConnectionState
-import com.filamentvision.model.ConnectionType
-import com.filamentvision.model.WifiConnectionConfig
+import com.filamentvision.model.WifiEndpointProfile
 import com.filamentvision.ui.monitor.MonitorUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -36,29 +34,20 @@ fun ConnectionDetailsSheet(
     onDismiss: () -> Unit,
     onDisconnect: () -> Unit,
     onReconnect: () -> Unit,
-    onSaveConnection: (ConnectionConfig) -> Unit,
+    onSaveConnection: (ConnectionProfile) -> Unit,
     onOpenDeviceSettings: () -> Unit,
 ) {
-    var editingType by remember { mutableStateOf<ConnectionType?>(null) }
-
+    var editing by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 12.dp),
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text("Connection", style = MaterialTheme.typography.headlineSmall)
-            if (editingType != null) {
-                val currentType = checkNotNull(editingType)
-                ConnectionConfigurationForm(
-                    type = currentType,
-                    initialConfig = when (currentType) {
-                        ConnectionType.WIFI -> uiState.connectionSettings.wifi
-                        ConnectionType.BLUETOOTH -> uiState.connectionSettings.bluetooth
-                    },
-                    onCancel = { editingType = null },
+            if (editing) {
+                ConnectionProfileForm(
+                    initialProfile = uiState.connectionProfile,
+                    onCancel = { editing = false },
                     onSave = onSaveConnection,
                 )
             } else {
@@ -70,18 +59,10 @@ fun ConnectionDetailsSheet(
                     }
                 }
                 if (uiState.canDisconnect) {
-                    OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
-                        Text("Disconnect")
-                    }
+                    OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
                 }
-                Text("Configure connection", fontWeight = FontWeight.SemiBold)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ConnectionChoiceButton("Wi-Fi", { editingType = ConnectionType.WIFI }, Modifier.weight(1f))
-                    ConnectionChoiceButton("Bluetooth", { editingType = ConnectionType.BLUETOOTH }, Modifier.weight(1f))
-                }
-                OutlinedButton(onClick = onOpenDeviceSettings, modifier = Modifier.fillMaxWidth()) {
-                    Text("Open Device settings")
-                }
+                Button(onClick = { editing = true }, modifier = Modifier.fillMaxWidth()) { Text("Edit connection profile") }
+                OutlinedButton(onClick = onOpenDeviceSettings, modifier = Modifier.fillMaxWidth()) { Text("Open Device settings") }
             }
         }
     }
@@ -90,15 +71,16 @@ fun ConnectionDetailsSheet(
 @Composable
 private fun ConnectionSummary(uiState: MonitorUiState) {
     DeviceStateRow("Device", uiState.deviceName)
-    DeviceStateRow("Method", uiState.connectionType.displayName())
-    DeviceStateRow("State", uiState.connectionState.name.replace('_', ' '))
-    DeviceStateRow("Device UID", uiState.connectionSettings.active.deviceUid)
-    when (val config = uiState.connectionSettings.active) {
-        is WifiConnectionConfig -> DeviceStateRow("Endpoint", "${config.host}:${config.port}")
-        is BluetoothConnectionConfig -> {
-            DeviceStateRow("BLE address", config.deviceAddress)
-            DeviceStateRow("Service UUID", config.serviceUuid)
-        }
+    DeviceStateRow("Input state", uiState.inputState.label())
+    DeviceStateRow("Topology", uiState.connectionProfile.topology.name.replace('_', ' '))
+    uiState.connectionProfile.endpoints.forEach { endpoint ->
+        DeviceStateRow("Endpoint ${endpoint.endpointId}", when (endpoint) {
+            is WifiEndpointProfile -> "${endpoint.protocol} ${endpoint.host}:${endpoint.port}"
+            is BluetoothEndpointProfile -> "${endpoint.protocol} ${endpoint.deviceName.ifBlank { endpoint.deviceUid }}"
+        })
+    }
+    uiState.connectionProfile.cameras.forEach { camera ->
+        DeviceStateRow("Camera ${camera.cameraId}", "${camera.endpointId} · ${camera.cameraUid.ifBlank { "UID not set" }}")
     }
     DeviceStateRow("Camera A", uiState.cameraAStatus.name.replace('_', ' '))
     DeviceStateRow("Camera B", uiState.cameraBStatus.name.replace('_', ' '))
@@ -106,18 +88,21 @@ private fun ConnectionSummary(uiState: MonitorUiState) {
 
 @Composable
 fun DeviceStateRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, color = MaterialTheme.colorScheme.secondary)
-        Text(value, fontWeight = FontWeight.SemiBold)
+        Text(value, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
     }
 }
 
-@Composable
-private fun ConnectionChoiceButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Button(onClick = onClick, modifier = modifier) { Text(label) }
-}
-
-private fun ConnectionType.displayName(): String = when (this) {
-    ConnectionType.BLUETOOTH -> "Bluetooth"
-    ConnectionType.WIFI -> "Wi-Fi"
+fun InputState.label(): String = when (this) {
+    InputState.Unconfigured -> "UNCONFIGURED"
+    is InputState.DriverUnavailable -> "DRIVER UNAVAILABLE"
+    InputState.Connecting -> "CONNECTING"
+    InputState.Connected -> "CONNECTED"
+    InputState.WaitingForFrame -> "WAITING FOR FRAME"
+    InputState.Streaming -> "STREAMING"
+    InputState.Reconnecting -> "RECONNECTING"
+    is InputState.DataFormatError -> "DATA FORMAT ERROR"
+    is InputState.ConnectionError -> "CONNECTION ERROR"
+    InputState.Stopped -> "STOPPED"
 }

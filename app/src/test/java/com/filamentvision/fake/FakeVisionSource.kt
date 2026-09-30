@@ -1,6 +1,8 @@
 package com.filamentvision.fake
 
 import com.filamentvision.hardware.VisionSource
+import com.filamentvision.hardware.VisionSourceDiagnostics
+import com.filamentvision.input.InputState
 import com.filamentvision.model.MeasurementStatus
 import com.filamentvision.model.SimulationScenario
 import com.filamentvision.model.VisionMeasurement
@@ -30,7 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/**
+/** Test-only deterministic measurement source. Never packaged in release builds.
  * Generates one smooth dual-view measurement stream for UI development.
  *
  * Start/stop is guarded by a mutex, making the single-producer guarantee atomic.
@@ -48,6 +50,8 @@ class FakeVisionSource(
     private val totalProducerStartCounter = AtomicInteger(0)
     private val emittedSampleCounter = AtomicLong(0)
     private val mutableState = MutableStateFlow(VisionSourceState.STOPPED)
+    private val mutableInputState = MutableStateFlow<InputState>(InputState.WaitingForFrame)
+    private val mutableDiagnostics = MutableStateFlow(VisionSourceDiagnostics())
     private val mutableScenario = MutableStateFlow(SimulationScenario.NORMAL)
     private val mutableMeasurements = MutableSharedFlow<VisionMeasurement>(
         replay = 1,
@@ -57,11 +61,13 @@ class FakeVisionSource(
     private var generationJob: Job? = null
 
     override val state: StateFlow<VisionSourceState> = mutableState.asStateFlow()
+    override val inputState: StateFlow<InputState> = mutableInputState.asStateFlow()
     override val measurements: Flow<VisionMeasurement> = mutableMeasurements.asSharedFlow()
+    override val diagnostics: StateFlow<VisionSourceDiagnostics> = mutableDiagnostics.asStateFlow()
     val scenario: StateFlow<SimulationScenario> = mutableScenario.asStateFlow()
-    val activeProducerCount: Int get() = activeProducerCounter.get()
-    val totalProducerStarts: Int get() = totalProducerStartCounter.get()
-    val emittedSampleCount: Long get() = emittedSampleCounter.get()
+    override val activeProducerCount: Int get() = activeProducerCounter.get()
+    override val totalProducerStarts: Int get() = totalProducerStartCounter.get()
+    override val emittedSampleCount: Long get() = emittedSampleCounter.get()
 
     override suspend fun start() = lifecycleMutex.withLock {
         check(!isClosed.get()) { "A closed FakeVisionSource cannot be restarted" }
@@ -70,11 +76,13 @@ class FakeVisionSource(
         mutableState.value = VisionSourceState.STARTING
         activeProducerCounter.incrementAndGet()
         totalProducerStartCounter.incrementAndGet()
+        mutableDiagnostics.value = VisionSourceDiagnostics(1, totalProducerStartCounter.get(), emittedSampleCounter.get())
         generationJob = sourceScope.launch {
             var sampleIndex = 0L
             while (isActive) {
                 mutableMeasurements.emit(buildMeasurement(sampleIndex, mutableScenario.value))
                 emittedSampleCounter.incrementAndGet()
+                mutableDiagnostics.value = VisionSourceDiagnostics(1, totalProducerStartCounter.get(), emittedSampleCounter.get())
                 sampleIndex += 1
                 delay(samplePeriodMillis)
             }
@@ -82,12 +90,15 @@ class FakeVisionSource(
             job.invokeOnCompletion { activeProducerCounter.decrementAndGet() }
         }
         mutableState.value = VisionSourceState.LIVE
+        mutableInputState.value = InputState.Streaming
     }
 
     override suspend fun stop() = lifecycleMutex.withLock {
         generationJob?.cancelAndJoin()
         generationJob = null
         mutableState.value = VisionSourceState.STOPPED
+        mutableInputState.value = InputState.WaitingForFrame
+        mutableDiagnostics.value = VisionSourceDiagnostics(0, totalProducerStartCounter.get(), emittedSampleCounter.get())
     }
 
     fun selectScenario(scenario: SimulationScenario) {

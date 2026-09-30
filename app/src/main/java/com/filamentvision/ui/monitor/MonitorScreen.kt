@@ -9,13 +9,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,22 +26,32 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.filamentvision.model.ConnectionState
-import com.filamentvision.model.ConnectionConfig
+import com.filamentvision.model.ConnectionProfile
 import com.filamentvision.model.MonitoringState
 import com.filamentvision.ui.components.CameraPreviewTile
 import com.filamentvision.ui.components.ConnectionStatusChip
 import com.filamentvision.ui.components.FilamentCore
 import com.filamentvision.ui.device.ConnectionDetailsSheet
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun MonitorScreen(
     viewModel: MonitorViewModel,
     onOpenDeviceSettings: () -> Unit,
     onOpenCamera: (String) -> Unit,
+    onOpenErrors: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val monitorUiState by viewModel.monitorUiState.collectAsStateWithLifecycle()
+    val cameraAResult by viewModel.visionPipelineRuntime.results("A").collectAsStateWithLifecycle()
+    val cameraBResult by viewModel.visionPipelineRuntime.results("B").collectAsStateWithLifecycle()
+    val previewScope = rememberCoroutineScope()
+    DisposableEffect(viewModel) {
+        var lease: com.filamentvision.vision.runtime.PreviewLease? = null
+        previewScope.launch { lease = viewModel.visionPipelineRuntime.acquirePreview("monitor") }
+        onDispose { previewScope.launch { lease?.release() } }
+    }
     var showConnectionSheet by remember { mutableStateOf(false) }
 
     Column(
@@ -53,10 +66,21 @@ fun MonitorScreen(
             uiState = monitorUiState,
             onConnectionClick = { showConnectionSheet = true },
         )
+        monitorUiState.activeSystemErrorTitle?.let { title ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(title, fontWeight = FontWeight.SemiBold)
+                    Text("Monitoring system fault is active.", color = MaterialTheme.colorScheme.secondary)
+                    OutlinedButton(onOpenErrors) { Text("View details") }
+                }
+            }
+        }
         LiveMeasurementPanel(
             viewModel = viewModel,
             monitorUiState = monitorUiState,
             onOpenCamera = onOpenCamera,
+            cameraAResult = cameraAResult,
+            cameraBResult = cameraBResult,
         )
     }
 
@@ -76,9 +100,9 @@ fun MonitorScreen(
                     viewModel.reconnect()
                 }
             },
-            onSaveConnection = { config: ConnectionConfig ->
+            onSaveConnection = { profile: ConnectionProfile ->
                 showConnectionSheet = false
-                viewModel.saveConnectionConfig(config)
+                viewModel.saveConnectionProfile(profile)
             },
             onOpenDeviceSettings = {
                 showConnectionSheet = false
@@ -104,6 +128,7 @@ private fun MonitorHeader(
         }
         ConnectionStatusChip(
             connectionState = uiState.connectionState,
+            inputState = uiState.inputState,
             onClick = onConnectionClick,
         )
     }
@@ -114,6 +139,8 @@ private fun LiveMeasurementPanel(
     viewModel: MonitorViewModel,
     monitorUiState: MonitorUiState,
     onOpenCamera: (String) -> Unit,
+    cameraAResult: com.filamentvision.vision.processing.VisionProcessingResult?,
+    cameraBResult: com.filamentvision.vision.processing.VisionProcessingResult?,
 ) {
     val liveUiState by viewModel.liveMeasurementUiState.collectAsStateWithLifecycle()
     val measurement = liveUiState.latestMeasurement
@@ -136,20 +163,12 @@ private fun LiveMeasurementPanel(
 
     SessionControls(viewModel = viewModel, uiState = monitorUiState)
 
-    if (measurement == null) {
-        Text("Waiting for preview data…", color = MaterialTheme.colorScheme.secondary)
-        return
+    if (measurement == null) Text("Waiting for official measurement…", color = MaterialTheme.colorScheme.secondary)
+    else {
+        FilamentCore(fusedDiameter = measurement.fusedDiameter, status = measurement.status)
+        MeasurementSummary(measurement.shapeDifference, measurement.confidence, liveUiState.bufferedSampleCount)
+        Text("Fusion ${measurement.status.name.replace('_', ' ')} · A/B difference ${"%.3f".format(measurement.shapeDifference)} mm")
     }
-
-    FilamentCore(
-        fusedDiameter = measurement.fusedDiameter,
-        status = measurement.status,
-    )
-    MeasurementSummary(
-        difference = measurement.shapeDifference,
-        confidence = measurement.confidence,
-        bufferedSamples = liveUiState.bufferedSampleCount,
-    )
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -157,16 +176,18 @@ private fun LiveMeasurementPanel(
         CameraPreviewTile(
             cameraName = "CAMERA A",
             cameraStatus = monitorUiState.cameraAStatus,
-            diameter = measurement.diameterA,
-            confidence = measurement.cameraAConfidence,
+            diameter = measurement?.diameterA ?: Double.NaN,
+            confidence = measurement?.cameraAConfidence ?: 0.0,
+            result = cameraAResult,
             onClick = { onOpenCamera("A") },
             modifier = Modifier.weight(1f),
         )
         CameraPreviewTile(
             cameraName = "CAMERA B",
             cameraStatus = monitorUiState.cameraBStatus,
-            diameter = measurement.diameterB,
-            confidence = measurement.cameraBConfidence,
+            diameter = measurement?.diameterB ?: Double.NaN,
+            confidence = measurement?.cameraBConfidence ?: 0.0,
+            result = cameraBResult,
             onClick = { onOpenCamera("B") },
             modifier = Modifier.weight(1f),
         )
@@ -239,7 +260,7 @@ private fun DisconnectedMonitorContent(
             style = MaterialTheme.typography.headlineSmall,
         )
         Text(
-            "Measurement and camera updates are stopped.",
+            "Waiting for a configured real image source. No synthetic data is generated.",
             color = MaterialTheme.colorScheme.secondary,
         )
         if (onConnect != null) {

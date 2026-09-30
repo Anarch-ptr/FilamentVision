@@ -40,6 +40,11 @@ class RoomSessionRepository(
     }
 
     override suspend fun recoverInterruptedSessions(): Int = dao.recoverActiveSessions()
+    override suspend fun recoverInterruptedSessionIds(): List<String> = database.withTransaction {
+        val ids = dao.getActiveSessionIds()
+        dao.recoverActiveSessions()
+        ids
+    }
 }
 
 class RoomMeasurementRepository(
@@ -139,6 +144,7 @@ private fun PersistedMeasurement.toEntity() = MeasurementEntity(
     cameraBConfidence = measurement.cameraBConfidence,
     confidence = measurement.confidence,
     measurementStatus = measurement.status.name,
+    sourceType = sourceType.name,
 )
 
 private fun MeasurementEntity.toDomain() = PersistedMeasurement(
@@ -155,6 +161,7 @@ private fun MeasurementEntity.toDomain() = PersistedMeasurement(
         status = MeasurementStatus.valueOf(measurementStatus),
         timestamp = timestamp,
     ),
+    sourceType = MeasurementSourceType.valueOf(sourceType),
 )
 
 private fun PersistedAlarmEvent.toEntity() = AlarmEventEntity(

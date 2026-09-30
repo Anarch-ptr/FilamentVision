@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.filamentvision.FilamentVisionApplication
 import com.filamentvision.data.repository.PersistedAlarmEvent
+import com.filamentvision.domain.error.ErrorEvent
 import com.filamentvision.domain.trend.StreamingTrendLoader
 import com.filamentvision.model.MonitoringSession
 import com.filamentvision.ui.components.chart.TrendChartPoint
@@ -21,6 +22,7 @@ data class HistoricalSessionUiState(
     val session: MonitoringSession? = null,
     val points: List<TrendChartPoint> = emptyList(),
     val alarms: List<PersistedAlarmEvent> = emptyList(),
+    val errors: List<ErrorEvent> = emptyList(),
     val isLoading: Boolean = false,
 )
 
@@ -47,6 +49,7 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                     session = session,
                     points = loader.load(session.id, session.startedAt, end),
                     alarms = app.alarmRepository.getAlarmEvents(session.id, session.startedAt, end),
+                    errors = app.errorRepository.getForSession(session.id),
                 )
             }
             mutableSelected.value = loaded

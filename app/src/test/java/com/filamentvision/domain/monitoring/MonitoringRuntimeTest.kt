@@ -5,6 +5,10 @@ import com.filamentvision.data.repository.MeasurementRepository
 import com.filamentvision.data.repository.PersistedAlarmEvent
 import com.filamentvision.data.repository.PersistedMeasurement
 import com.filamentvision.data.repository.SessionRepository
+import com.filamentvision.domain.error.ErrorEpisodeIdentity
+import com.filamentvision.domain.error.ErrorEvent
+import com.filamentvision.domain.error.ErrorRecorder
+import com.filamentvision.domain.error.NewErrorRecord
 import com.filamentvision.fake.FakeDeviceConnection
 import com.filamentvision.fake.FakeVisionSource
 import com.filamentvision.model.ConnectionState
@@ -14,6 +18,7 @@ import com.filamentvision.model.SessionStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -28,6 +33,66 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MonitoringRuntimeTest {
+    @Test
+    fun concurrentLazyRecoveryTouchesRepositoryExactlyOnce() = runTest {
+        val fixture = fixture()
+
+        val results = List(20) { async { fixture.runtime.recoverInterruptedSessions() } }.awaitAll()
+
+        assertEquals(List(20) { 7 }, results)
+        assertEquals(1, fixture.sessions.recoveryCalls)
+        fixture.runtime.close()
+    }
+
+    @Test
+    fun firstLifecycleCommandPerformsRecoveryBeforeConnectionIsReady() = runTest {
+        val fixture = fixture()
+
+        fixture.connect(this)
+
+        assertEquals(1, fixture.sessions.recoveryCalls)
+        assertEquals(ConnectionState.CONNECTED, fixture.runtime.state.value.connectionState)
+        fixture.runtime.close()
+    }
+
+    @Test
+    fun repositoryFactoriesStayLazyUntilTheirRuntimePathIsUsed() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val sessions = FakeSessionRepository()
+        val measurements = FakeMeasurementRepository()
+        val alarms = FakeAlarmRepository()
+        var sessionFactoryCalls = 0
+        var measurementFactoryCalls = 0
+        var alarmFactoryCalls = 0
+        val source = FakeVisionSource(dispatcher = dispatcher)
+        val runtime = MonitoringRuntime(
+            deviceConnection = FakeDeviceConnection(),
+            visionSource = source,
+            sessionRepositoryProvider = { sessionFactoryCalls += 1; sessions },
+            measurementRepositoryProvider = { measurementFactoryCalls += 1; measurements },
+            alarmRepositoryProvider = { alarmFactoryCalls += 1; alarms },
+            dispatcher = dispatcher,
+        )
+
+        assertEquals(0, sessionFactoryCalls)
+        assertEquals(0, measurementFactoryCalls)
+        assertEquals(0, alarmFactoryCalls)
+
+        val connectJob = launch { runtime.connect() }
+        advanceTimeBy(1_250L)
+        connectJob.join()
+        assertEquals(1, sessionFactoryCalls)
+        assertEquals(0, measurementFactoryCalls)
+        assertEquals(0, alarmFactoryCalls)
+
+        runtime.startMonitoring(1.75)
+        runCurrent()
+        assertEquals(1, sessionFactoryCalls)
+        assertEquals(1, measurementFactoryCalls)
+        assertEquals(1, alarmFactoryCalls)
+        runtime.close()
+    }
+
     @Test
     fun readyHasZeroProducerAndDuplicateStartCreatesOneSessionAndProducer() = runTest {
         val fixture = fixture()
@@ -114,6 +179,7 @@ class MonitoringRuntimeTest {
         )
         val sessions = FakeSessionRepository()
         val measurements = FakeMeasurementRepository()
+        val errors = FakeErrorRecorder()
         return Fixture(
             runtime = MonitoringRuntime(
                 deviceConnection = FakeDeviceConnection(),
@@ -121,12 +187,14 @@ class MonitoringRuntimeTest {
                 sessionRepository = sessions,
                 measurementRepository = measurements,
                 alarmRepository = FakeAlarmRepository(),
+                errorRecorder = errors,
                 dispatcher = dispatcher,
                 nowMillis = { testScheduler.currentTime },
             ),
             source = source,
             sessions = sessions,
             measurements = measurements,
+            errors = errors,
         )
     }
 
@@ -135,6 +203,7 @@ class MonitoringRuntimeTest {
         val source: FakeVisionSource,
         val sessions: FakeSessionRepository,
         val measurements: FakeMeasurementRepository,
+        val errors: FakeErrorRecorder,
     ) {
         suspend fun connect(scope: kotlinx.coroutines.test.TestScope) = with(scope) {
             val job = launch { runtime.connect() }
@@ -144,9 +213,17 @@ class MonitoringRuntimeTest {
         }
     }
 
+    private class FakeErrorRecorder : ErrorRecorder {
+        val records = mutableListOf<NewErrorRecord>()
+        val resolutions = mutableListOf<ErrorEpisodeIdentity>()
+        override suspend fun record(record: NewErrorRecord): ErrorEvent? { records += record; return null }
+        override suspend fun resolve(identity: ErrorEpisodeIdentity): Boolean { resolutions += identity; return true }
+    }
+
     private class FakeSessionRepository : SessionRepository {
         val created = mutableListOf<MonitoringSession>()
         val finalized = mutableListOf<MonitoringSession>()
+        var recoveryCalls = 0
         private val sessionFlow = MutableStateFlow<List<MonitoringSession>>(emptyList())
         override val sessions: Flow<List<MonitoringSession>> = sessionFlow
 
@@ -163,7 +240,11 @@ class MonitoringRuntimeTest {
         override suspend fun getById(sessionId: String) =
             (finalized + created).lastOrNull { it.id == sessionId }
         override suspend fun delete(sessionId: String) = Unit
-        override suspend fun recoverInterruptedSessions() = 0
+        override suspend fun recoverInterruptedSessions(): Int {
+            recoveryCalls += 1
+            delay(50L)
+            return 7
+        }
     }
 
     private class FakeMeasurementRepository : MeasurementRepository {

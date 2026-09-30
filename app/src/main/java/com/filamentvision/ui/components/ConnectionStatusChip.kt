@@ -13,10 +13,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.filamentvision.model.ConnectionState
+import com.filamentvision.input.InputState
+import com.filamentvision.ui.device.label
 
 @Composable
 fun ConnectionStatusChip(
     connectionState: ConnectionState,
+    inputState: InputState,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -28,7 +31,7 @@ fun ConnectionStatusChip(
         border = BorderStroke(1.dp, statusColor.copy(alpha = 0.7f)),
     ) {
         Text(
-            text = connectionState.displayName(),
+            text = if (inputState is InputState.Unconfigured || inputState is InputState.DriverUnavailable) inputState.label() else connectionState.displayName(),
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
             color = statusColor,
             fontWeight = FontWeight.Bold,

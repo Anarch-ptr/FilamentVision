@@ -25,20 +25,25 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.filamentvision.model.CalibrationStatus
 import com.filamentvision.model.ConnectionState
-import com.filamentvision.model.ConnectionType
-import com.filamentvision.model.ConnectionConfig
-import com.filamentvision.model.BluetoothConnectionConfig
-import com.filamentvision.model.WifiConnectionConfig
+import com.filamentvision.model.ConnectionProfile
 import com.filamentvision.ui.monitor.MonitorViewModel
+import com.filamentvision.ui.error.ErrorLogViewModel
+import com.filamentvision.domain.error.ErrorSeverity
+import com.filamentvision.domain.error.ErrorState
 
 @Composable
 fun DeviceScreen(
     viewModel: MonitorViewModel,
+    errorViewModel: ErrorLogViewModel,
     onOpenDiagnostics: () -> Unit,
+    onOpenVisionDiagnostics: () -> Unit,
+    onOpenErrors: () -> Unit,
     onOpenCamera: (String) -> Unit,
+    onOpenCalibration: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val uiState by viewModel.monitorUiState.collectAsStateWithLifecycle()
+    val errors by errorViewModel.state.collectAsStateWithLifecycle()
     var showConnectionSheet by remember { mutableStateOf(false) }
 
     Column(
@@ -57,6 +62,15 @@ fun DeviceScreen(
 
         DeviceInformationCard(uiState = uiState)
         MonitoringConfigurationCard(uiState = uiState)
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val active = errors.errors.count { it.state == ErrorState.ACTIVE }
+                val critical = errors.errors.count { it.state == ErrorState.ACTIVE && it.severity == ErrorSeverity.CRITICAL }
+                Text("System health", fontWeight = FontWeight.SemiBold)
+                Text(if (active == 0) "No active errors" else "$active active errors · $critical critical")
+                OutlinedButton(onOpenErrors, Modifier.fillMaxWidth()) { Text("View Error Log") }
+            }
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -100,14 +114,16 @@ fun DeviceScreen(
         ) {
             Text("Change connection")
         }
-        OutlinedButton(
-            onClick = viewModel::runFakeCalibration,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(if (uiState.calibrationStatus == CalibrationStatus.CALIBRATING) "Calibrating…" else "Calibration")
+        Text("Calibration uses live real-input preview. Save persists; Apply activates the revision.")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = { onOpenCalibration("A") }, modifier = Modifier.weight(1f)) { Text("Calibrate A") }
+            OutlinedButton(onClick = { onOpenCalibration("B") }, modifier = Modifier.weight(1f)) { Text("Calibrate B") }
         }
         OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) {
-            Text("Diagnostics / Simulation")
+            Text("Diagnostics")
+        }
+        OutlinedButton(onClick = onOpenVisionDiagnostics, modifier = Modifier.fillMaxWidth()) {
+            Text("Vision Pipeline Diagnostics")
         }
     }
 
@@ -127,9 +143,9 @@ fun DeviceScreen(
                     viewModel.reconnect()
                 }
             },
-            onSaveConnection = { config: ConnectionConfig ->
+            onSaveConnection = { profile: ConnectionProfile ->
                 showConnectionSheet = false
-                viewModel.saveConnectionConfig(config)
+                viewModel.saveConnectionProfile(profile)
             },
             onOpenDeviceSettings = { showConnectionSheet = false },
         )
@@ -147,12 +163,9 @@ private fun DeviceInformationCard(uiState: com.filamentvision.ui.monitor.Monitor
         ) {
             DeviceStateRow("Connection", uiState.connectionState.name.replace('_', ' '))
             DeviceStateRow("Monitoring", uiState.monitoringState.name.replace('_', ' '))
-            DeviceStateRow("Method", uiState.connectionType.displayName())
-            DeviceStateRow("Device UID", uiState.connectionSettings.active.deviceUid)
-            when (val config = uiState.connectionSettings.active) {
-                is WifiConnectionConfig -> DeviceStateRow("Endpoint", "${config.host}:${config.port}")
-                is BluetoothConnectionConfig -> DeviceStateRow("BLE address", config.deviceAddress)
-            }
+            DeviceStateRow("Input", uiState.inputState.label())
+            DeviceStateRow("Topology", uiState.connectionProfile.topology.name.replace('_', ' '))
+            DeviceStateRow("Endpoints", uiState.connectionProfile.endpoints.size.toString())
             DeviceStateRow("Camera A", uiState.cameraAStatus.name.replace('_', ' '))
             DeviceStateRow("Camera B", uiState.cameraBStatus.name.replace('_', ' '))
             DeviceStateRow("Calibration", uiState.calibrationStatus.name.replace('_', ' '))
@@ -173,12 +186,7 @@ private fun MonitoringConfigurationCard(uiState: com.filamentvision.ui.monitor.M
             DeviceStateRow("Target diameter", "%.3f mm".format(uiState.configuration.targetDiameterMm))
             DeviceStateRow("Measurement rate", "${uiState.configuration.measurementRateHz} Hz")
             DeviceStateRow("Realtime buffer", "${uiState.configuration.realtimeBufferCapacity} samples")
-            DeviceStateRow("Fake producers", uiState.activeFakeProducerCount.toString())
+            DeviceStateRow("Active producers", uiState.activeProducerCount.toString())
         }
     }
-}
-
-private fun ConnectionType.displayName(): String = when (this) {
-    ConnectionType.BLUETOOTH -> "Bluetooth"
-    ConnectionType.WIFI -> "Wi-Fi"
 }

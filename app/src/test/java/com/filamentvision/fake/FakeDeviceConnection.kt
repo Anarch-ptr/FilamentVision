@@ -1,6 +1,7 @@
 package com.filamentvision.fake
 
 import com.filamentvision.hardware.DeviceConnection
+import com.filamentvision.input.InputState
 import com.filamentvision.model.ConnectionState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -9,12 +10,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** UI-only connection state machine. It never calls a radio or network API. */
+/** Test-only connection state machine. Never packaged in release builds. */
 class FakeDeviceConnection : DeviceConnection {
     private val operationMutex = Mutex()
     private val mutableState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    private val mutableInputState = MutableStateFlow<InputState>(InputState.WaitingForFrame)
 
     override val state: StateFlow<ConnectionState> = mutableState.asStateFlow()
+    override val inputState: StateFlow<InputState> = mutableInputState.asStateFlow()
 
     override suspend fun connect() = operationMutex.withLock {
         if (mutableState.value == ConnectionState.CONNECTED) return@withLock

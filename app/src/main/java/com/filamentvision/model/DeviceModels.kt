@@ -1,10 +1,5 @@
 package com.filamentvision.model
 
-enum class ConnectionType {
-    BLUETOOTH,
-    WIFI,
-}
-
 enum class CameraStatus {
     OFFLINE,
     READY,

@@ -6,7 +6,10 @@ data class PersistedMeasurement(
     val id: Long = 0L,
     val sessionId: String,
     val measurement: VisionMeasurement,
+    val sourceType: MeasurementSourceType = MeasurementSourceType.REAL,
 )
+
+enum class MeasurementSourceType { REAL }
 
 interface MeasurementRepository {
     suspend fun insertMeasurements(measurements: List<PersistedMeasurement>)

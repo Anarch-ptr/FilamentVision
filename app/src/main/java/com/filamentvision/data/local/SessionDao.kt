@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface SessionDao {
+    @Query("SELECT sessionId FROM monitoring_sessions WHERE status = 'ACTIVE'")
+    suspend fun getActiveSessionIds(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(session: MonitoringSessionEntity)
 

@@ -11,4 +11,5 @@ interface SessionRepository {
     suspend fun getById(sessionId: String): MonitoringSession?
     suspend fun delete(sessionId: String)
     suspend fun recoverInterruptedSessions(): Int
+    suspend fun recoverInterruptedSessionIds(): List<String>? = null
 }
